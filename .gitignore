@@ -1,7 +1,7 @@
 learning/data-sampling/datasets
 learning/data-sampling/datasets/*
-learning/nn-learning/model
-learning/nn-learning/model/*
+#learning/nn-learning/model
+#learning/nn-learning/model/*
 *.pyc
 learning/nn-learning/sdf/__pycache__
 learning/nn-learning/sdf/__pycache__/*
