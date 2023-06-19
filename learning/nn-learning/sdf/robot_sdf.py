@@ -12,15 +12,15 @@ from functorch.compile import aot_function
 
 class RobotSdfCollisionNet():
     """This class loads a network to predict the signed distance given a robot joint config."""
-    def __init__(self, in_channels, out_channels, skips, layers):
+    def __init__(self, in_channels, out_channels, skips, layers, dropout_ratio):
 
         super().__init__()
         act_fn = ReLU
         in_channels = in_channels
         self.out_channels = out_channels
-        dropout_ratio = 0
+        # dropout_ratio = 0
         mlp_layers = layers
-        self.model = MLPRegression(in_channels, self.out_channels, mlp_layers, skips, act_fn=act_fn, nerf=True)
+        self.model = MLPRegression(in_channels, self.out_channels, mlp_layers, dropout_ratio, skips, act_fn=act_fn, nerf=True)
         self.m = torch.zeros((500, 1)).to('cuda:0')
         self.m[:, 0] = 1
         self.order = list(range(out_channels))
@@ -61,7 +61,7 @@ class RobotSdfCollisionNet():
         """
         with torch.no_grad():
             q_scale = scale_to_net(q, self.norm_dict, 'x')
-            dist = self.model.forward(q_scale)
+            dist = self.model.forward(q_scale, dropoutOn=False)
             dist_scale = scale_to_base(dist, self.norm_dict, 'y')
         return dist_scale[:, self.order].detach()
 
@@ -74,7 +74,7 @@ class RobotSdfCollisionNet():
                 q.requires_grad = True
                 q.grad = None
                 q_scale = scale_to_net(q, self.norm_dict, 'x')
-                dist = self.model.forward(q_scale)
+                dist = self.model.forward(q_scale, dropoutOn=False)
                 dist_scale = scale_to_base(dist, self.norm_dict, 'y').detach()
                 m = torch.zeros((q.shape[0], dist.shape[1])).to(q.device)
                 m[:, 0] = 1

@@ -23,20 +23,21 @@
 from scipy.io import loadmat, savemat
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 import numpy as np
 import time
-# import yaml
+import yaml
 
 import os
 import matplotlib.pyplot as plt
 from sdf.robot_sdf import RobotSdfCollisionNet
 
-
+import tqdm
+b=50000
 def create_dataset(robot_name):
     device = torch.device('cuda', 0)
     tensor_args = {'device': device, 'dtype': torch.float32}
     #    data = loadmat('../weights/table_beeger.mat')['data']
-    # data = loadmat('../data-sampling/datasets/data_mesh_test.mat')['dataset']
     data = loadmat('../data-sampling/datasets/data_mesh.mat')['dataset']
     # idx_good = (data[:,10:-1] > -0.03).all(1)
     # data = data[idx_good, :]
@@ -61,11 +62,13 @@ def create_dataset(robot_name):
     dof = x.shape[1]
     s = 256
     n_layers = 5
+    b = 350000
+    p = 0.0 #!! How much you make zero of node, not activate. (ex. 1.0 means that you make all node zero)
     skips = []
-    fname = 'sdf_%dx%d_mesh.pt'%(s,n_layers)
+    fname = 'model/sdf_%dx%d_mesh_%d_drop_%1f.pt'%(s,n_layers,b,p)
     if skips == []:
         n_layers-=1
-    nn_model = RobotSdfCollisionNet(in_channels=dof, out_channels=y.shape[1], layers=[s] * n_layers, skips=skips, dropout_ratio=0.0)
+    nn_model = RobotSdfCollisionNet(in_channels=dof, out_channels=y.shape[1], layers=[s] * n_layers, skips=skips, dropout_ratio=p)
     #nn_model.load_weights('../scripts/sdf_convex_256x5_mesh.pt', tensor_args)
     #nn_model.load_weights('../scripts/gridsearch/5_sdf_convex_512x5.pt', tensor_args)
     #nn_model.load_weights('../scripts/raesdf_256x5_mesh.pt', tensor_args)
@@ -88,6 +91,12 @@ def create_dataset(robot_name):
     y_val_labels[y_val_labels<=0] = -1
     y_val_labels[y_val_labels>0] = 1
 
+    dataset = torch.utils.data.TensorDataset(x_train, y_train, y_train_labels)
+
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=b)
+    # x_train_loader = torch.utils.data.DataLoader(x_train, batch_size=1024, shuffle=True)
+    # y_train_loader = torch.utils.data.DataLoader(y_train, batch_size=1024, shuffle=True)
+
     # scale dataset: (disabled because of nerf features!)
     mean_x = torch.mean(x, dim=0) * 0.0
     std_x = torch.std(x, dim=0) * 0.0 + 1.0
@@ -99,34 +108,40 @@ def create_dataset(robot_name):
     x_test = x[idx_test, :]
     y_test = y[idx_test, :]
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=2e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000,
                                                            threshold=0.01, threshold_mode='rel',
                                                            cooldown=0, min_lr=0, eps=1e-04, verbose=True)
     # print(model)
-    epochs = 100000
+    # epochs = 100000
+    epochs = 2000
     min_loss = 2000.0
     # training:
     e_notsaved = 0
     scaler = torch.cuda.amp.GradScaler(enabled=True)
     idx_close_train = (y_train[:, -1] < 10)
     idx_close_val = (y_val[:, -1] < 10)
+    
+    
+    
+    
 
     for e in range(epochs):
         t0 = time.time()
-        model.train()
-        loss = []
-        i = 0
-        with torch.cuda.amp.autocast():
-            y_pred_train = (model.forward(x_train))
-            train_loss = F.mse_loss(y_pred_train, y_train, reduction='mean')
+        loader_tqdm = tqdm.tqdm(dataloader)
+        for x ,y, _ in loader_tqdm:
+            model.train()
+            loss = []
+            with torch.cuda.amp.autocast():
+                y_pred_train = model.forward(x)
+                train_loss = F.mse_loss(y_pred_train, y, reduction='mean')
 
-        scaler.scale(train_loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad()
-        loss.append(train_loss.item())
+            scaler.scale(train_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            loss.append(train_loss.item())
 
         model.eval()
         with torch.cuda.amp.autocast():
@@ -137,8 +152,7 @@ def create_dataset(robot_name):
             min_loss = val_loss
         scheduler.step(val_loss)
         train_loss = np.mean(loss)
-        e_notsaved += 1
-        if (val_loss < min_loss and e > 0 and e_notsaved > 0):
+        if (val_loss < min_loss):
             e_notsaved = 0
             print('saving model', val_loss.item())
             torch.save(
@@ -147,20 +161,25 @@ def create_dataset(robot_name):
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'norm': {'x': {'mean': mean_x, 'std': std_x},
-                             'y': {'mean': mean_y, 'std': std_y}}
+                            'y': {'mean': mean_y, 'std': std_y}}
                 },
                 fname)
                 #'sdf_convex_256_mlp_nerf_skip.pt')
             min_loss = val_loss
-            print(y_pred[0, :])
-            print(y_val[0, :])
+        print(y_pred[0, :])
+        print(y_val[0, :])
             # if e > 1500:
             #     break
         print(
             "Epoch: %d (Saved at %d), Train Loss: %4.3f, Validation Loss: %4.3f (%4.3f), Epoch time: %4.3f s, LR = %4.8f" % (
-                e, e-e_notsaved+1, train_loss.item(), val_loss.item(), ee_loss_close.item(), time.time() - t0,
+                e, e-e_notsaved, train_loss.item(), val_loss.item(), ee_loss_close.item(), time.time() - t0,
                 optimizer.param_groups[0]["lr"]))
-        
+        f=open("log/log(b=%d)_dropout_%1f.txt" % (b, p), 'a')
+        f.write("Epoch: %d (Saved at %d), Train Loss: %4.3f, Validation Loss: %4.3f (%4.3f), Epoch time: %4.3f s, LR = %4.8f\n" % (
+                e, e-e_notsaved, train_loss.item(), val_loss.item(), ee_loss_close.item(), time.time() - t0,
+                optimizer.param_groups[0]["lr"]))
+        f.close()
+        e_notsaved += 1
         #print(abs(y_pred-y_val).mean(0))
 
     # with torch.no_grad():

@@ -35,11 +35,11 @@ from sdf.robot_sdf import RobotSdfCollisionNet
 def run_sdf():
     device = torch.device('cuda', 0)
     tensor_args = {'device': device, 'dtype': torch.float32}
-    data = loadmat('../data-sampling/datasets/data_mesh_test.mat')['dataset']
+    data = loadmat('../data-sampling/datasets/data_mesh.mat')['dataset']
 
 
-    x = torch.Tensor(data[:, 0:10]).to(**tensor_args)
-    y = 100 * torch.Tensor(data[:, 10:]).to(**tensor_args)
+    x = torch.Tensor(data[0:1, 0:10]).to(**tensor_args)
+    y = 100 * torch.Tensor(data[0:1, 10:]).to(**tensor_args)
 
     dof = x.shape[1]
     s = 256
@@ -67,6 +67,8 @@ def run_sdf():
 
     # print(x.shape)
     y_pred = model.forward(x)
+    print(y_pred)
+    print(y)
     y_pred = torch.mul(y_pred, std_y) + mean_y
     y_test = torch.mul(y, std_y) + mean_y
     # print(y_pred.shape, y_test.shape)

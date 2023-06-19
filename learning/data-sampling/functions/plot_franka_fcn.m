@@ -1,4 +1,4 @@
-function patch_handle = plot_franka_fcn(ax_handle,patch_handle,mesh, base, joint_state,clr,hl_idx)
+function patch_handle = plot_franka_fcn(ax_handle,patch_handle,mesh, base, joint_state,clr,hl_idx, facealpha_)
 %%
 r = [0 0 0 0.0825 -0.0825 0 0.088 0];
 d = [0.333 0 0.316 0 0.384 0 0 0.107];
@@ -18,7 +18,11 @@ end
 %% plotting
 %uiaxes(ax_handle);
 facecolor = clr;
-facealpha = 1;
+if nargin > 7
+    facealpha = facealpha_;
+else
+    facealpha = 1;
+end
 edgealpha = 0;
 idx_order ={'link0';'link1';'link2';'link3';'link4';'link5';'link6';'link7';'hand';'finger';'finger'};
 idx_order ={'link0';'link1';'link2';'link3';'link4';'link5';'link6';'link7';'hand'};

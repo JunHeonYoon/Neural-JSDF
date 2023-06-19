@@ -61,7 +61,7 @@ def weights_init(m):
         if(m.bias is not None):
             m.bias.data.zero_()
 
-def MLP(channels, act_fn=ReLU, islast = False):
+def MLP(channels, act_fn=ReLU, islast = False, dropout_ratio = 1.0):
     """Automatic generation of mlp given some
 
     Args:
@@ -75,12 +75,21 @@ def MLP(channels, act_fn=ReLU, islast = False):
     Returns:
         nn sequential layers
     """
+    layers=[]
+    # if dropout_ratio > 0.0:
+    #     layers.append(nn.Dropout(dropout_ratio))
+    #     print("dropout: ", dropout_ratio)
+
     if not islast:
         layers = [Seq(Lin(channels[i - 1], channels[i]), act_fn())
                   for i in range(1, len(channels))]
+        # for i in range(1, len(channels)):
+        #     layers.append(Lin(channels[i - 1], channels[i]), act_fn())
     else:
         layers = [Seq(Lin(channels[i - 1], channels[i]), act_fn())
                   for i in range(1, len(channels)-1)]
+        # for i in range(1, len(channels)-1):
+        #     layers.append(Lin(channels[i - 1], channels[i]), act_fn())
         layers.append(Seq(Lin(channels[-2], channels[-1])))
     
     layers = Seq(*layers)
@@ -89,7 +98,7 @@ def MLP(channels, act_fn=ReLU, islast = False):
 
 
 class MLPRegression(nn.Module):
-    def __init__(self, input_dims=10, output_dims=1, mlp_layers=[128, 128, 128, 128, 128],skips=[2], act_fn=ReLU, nerf=True):
+    def __init__(self, input_dims=10, output_dims=1, mlp_layers=[128, 128, 128, 128, 128], dropout_ratio = 1.0, skips=[2], act_fn=ReLU, nerf=True):
         """Create an instance of mlp nn model
 
         Args:
@@ -104,7 +113,7 @@ class MLPRegression(nn.Module):
             nerf (bool, optional): use positional encoding (x->[sin(x),cos(x)]). Defaults to False.
         """        
         super(MLPRegression, self).__init__()
-
+        self.dropout = nn.Dropout(dropout_ratio)
         mlp_arr = []
         if (nerf):
             input_dims = 3*input_dims
@@ -123,12 +132,14 @@ class MLPRegression(nn.Module):
         mlp_arr[0].insert(0,input_dims)
         self.layers = nn.ModuleList()
         for arr in mlp_arr[0:-1]:
-            self.layers.append(MLP(arr,act_fn=act_fn, islast=False))
-        self.layers.append(MLP(mlp_arr[-1],act_fn=act_fn, islast=True))
+            self.layers.append(MLP(arr,act_fn=act_fn, islast=False, dropout_ratio=dropout_ratio))
+        self.layers.append(MLP(mlp_arr[-1],act_fn=act_fn, islast=True, dropout_ratio=dropout_ratio))
 
         self.nerf = nerf
     
-    def forward(self, x):
+    def forward(self, x, dropoutOn = True):
+        if dropoutOn == True:
+            x = self.dropout(x)
         """forward pass on network."""        
         if(self.nerf):
             x_nerf = torch.cat((x, torch.sin(x), torch.cos(x)), dim=-1)
