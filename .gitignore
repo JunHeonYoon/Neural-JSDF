@@ -5,3 +5,4 @@ learning/data-sampling/datasets/*
 *.pyc
 learning/nn-learning/sdf/__pycache__
 learning/nn-learning/sdf/__pycache__/*
+.vscode
