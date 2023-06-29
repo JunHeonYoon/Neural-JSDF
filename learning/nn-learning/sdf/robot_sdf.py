@@ -91,6 +91,9 @@ class RobotSdfCollisionNet():
                 dist_scale = dist_scale[:, self.order]
                 minidxMask = torch.argmin(dist_scale, dim=1)
                 grd = torch.zeros((q.shape[0], self.out_channels), device = q.device, dtype = q.dtype) # same shape as preds
+                # jac = torch.autograd.functional.jacobian(self.model, q)
+                # print("Temp Jacobian: ")
+                # print(jac)
                 if type(idx) == list:
                     grads = torch.zeros((q.shape[0], q.shape[1], len(idx)))
                     for k, i in enumerate(idx):

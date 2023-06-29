@@ -137,7 +137,7 @@ class MLPRegression(nn.Module):
 
         self.nerf = nerf
     
-    def forward(self, x, dropoutOn = True):
+    def forward(self, x, dropoutOn = False):
         if dropoutOn == True:
             x = self.dropout(x)
         """forward pass on network."""        
