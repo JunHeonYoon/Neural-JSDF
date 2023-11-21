@@ -6,13 +6,16 @@ set(CMAKE_CXX_STANDARD 11)
 # Find Python
 find_package(Python 3.8 REQUIRED COMPONENTS Development)
 find_package(Eigen3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 # Include directories
 include_directories(${EIGEN3_INCLUDE_DIRS})
 include_directories(${Python_INCLUDE_DIRS})
 
 # Add your C++ source files here
-set(SOURCES NJSDF_.cpp)
+set(SOURCES NJSDF.cpp)
+add_compile_options(-O3 -fopenmp -fPIC)
+add_link_options(-fopenmp)
 
 # Create shared library in output directory
 add_library(NJSDF_FUN MODULE ${SOURCES})

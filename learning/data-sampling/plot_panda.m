@@ -1,5 +1,6 @@
+close all
 ax_handle = axes('View',[115 12],'Position',[0.1300 0.1100 0.7750 0.8150]);
-axis off
+% axis off
 hold on 
 axis equal
 load('meshes/mesh_full.mat');
@@ -7,7 +8,8 @@ addpath('functions/')
 
 
 base = eye(4);
-joint_state = [0 0 0 -pi/2 0 pi/2 0 0];
+% joint_state = [0 0 0 -pi/2 0 pi/2 0 0];
+joint_state = [0 0 0 0 0 0 0 0];
 % clr = [0 0.5 1];
 clr = [0 0.4470 0.7410;
        0.8500 0.3250 0.0980;
@@ -47,7 +49,9 @@ idx_order ={'link0';'link1';'link2';'link3';'link4';'link5';'link6';'link7';'han
 idx_order ={'link0';'link1';'link2';'link3';'link4';'link5';'link6';'link7';'hand'};
 
 %plot base to end-effector (without fingers!)
-for i = 1:1:length(idx_order)
+for i = 8
+% for i = 1:1:length(idx_order)
+
     idx = find_idx(idx_order{i},mesh);
     R = P{i}(1:3,1:3);
     T = P{i}(1:3,4);

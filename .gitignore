@@ -8,3 +8,5 @@ learning/nn-learning/sdf/__pycache__/*
 .vscode
 learning/nn-learning/build
 learning/nn-learning/build/*
+cpp/build
+cpp/build/*

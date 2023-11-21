@@ -7,6 +7,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/eigen.h>
 #include <ctime>
+#include <omp.h>
 
 const std::string NJSDF_DIR = "/home/yoonjunheon/git/Neural-JSDF";
 
@@ -37,11 +38,10 @@ double ReLU_derivative(double input)
 struct MLP
 {
     ~MLP() { std::cout << "MLP terminate" << std::endl; }
-    std::vector<Eigen::MatrixXd> weight;
+    std::vector<Eigen::SparseMatrix<double>> weight;
     std::vector<Eigen::VectorXd> bias;
     std::vector<Eigen::VectorXd> hidden;
-    std::vector<Eigen::MatrixXd> hidden_derivative;
-    // std::vector<Eigen::SparseMatrix<double>> hidden_derivative;
+    std::vector<Eigen::SparseMatrix<double>> hidden_derivative;
 
     std::vector<std::string> w_path;
     std::vector<std::string> b_path;
@@ -60,7 +60,6 @@ struct MLP
 
     bool is_nerf;
     Eigen::VectorXd input_nerf;
-    // Eigen::MatrixXd nerf_jac;
     Eigen::SparseMatrix<double> nerf_jac;
 
     bool loadweightfile_verbose = false;
@@ -77,7 +76,7 @@ void readWeightFile(MLP &mlp, int weight_num)
     {
         for (int j = 0; j < mlp.weight[weight_num].cols(); j++)
         {
-            mlp.weight_files[weight_num] >> mlp.weight[weight_num](i, j);
+            mlp.weight_files[weight_num] >> mlp.weight[weight_num].coeffRef(i, j);
         }
     }
     mlp.weight_files[weight_num].close();
@@ -148,37 +147,37 @@ void initializeNetwork(MLP &mlp, int n_input, int n_output, Eigen::VectorXd n_hi
         {
             if(mlp.is_nerf) 
             {
-                mlp.weight[i].setZero(mlp.n_hidden(i), 3 * mlp.n_input);
-                mlp.hidden_derivative[i].setZero(mlp.n_hidden(i), 3 * mlp.n_input);
-                // mlp.hidden_derivative[i].resize(mlp.n_hidden(i), 3 * mlp.n_input);
-                // mlp.hidden_derivative[i].setZero();
+                mlp.weight[i].resize(mlp.n_hidden(i), 3 * mlp.n_input);
+                mlp.weight[i].setZero();
+                mlp.hidden_derivative[i].resize(mlp.n_hidden(i), 3 * mlp.n_input);
+                mlp.hidden_derivative[i].setZero();
             }
             else
             {
-                mlp.weight[i].setZero(mlp.n_hidden(i), mlp.n_input);
-                mlp.hidden_derivative[i].setZero(mlp.n_hidden(i), mlp.n_input);
-                // mlp.hidden_derivative[i].resize(mlp.n_hidden(i), mlp.n_input);
-                // mlp.hidden_derivative[i].setZero();
+                mlp.weight[i].resize(mlp.n_hidden(i), mlp.n_input);
+                mlp.weight[i].setZero();
+                mlp.hidden_derivative[i].resize(mlp.n_hidden(i), mlp.n_input);
+                mlp.hidden_derivative[i].setZero();
             }
             mlp.bias[i].setZero(mlp.n_hidden(i));
             mlp.hidden[i].setZero(mlp.n_hidden(i));
         }
         else if (i == mlp.n_layer - 1)
         {
-            mlp.weight[i].setZero(mlp.n_output, mlp.n_hidden(i - 1));
+            mlp.weight[i].resize(mlp.n_output, mlp.n_hidden(i - 1));
+            mlp.weight[i].setZero();
             mlp.bias[i].setZero(mlp.n_output);
         }
         else
         {
-            mlp.weight[i].setZero(mlp.n_hidden(i), mlp.n_hidden(i - 1));
+            mlp.weight[i].resize(mlp.n_hidden(i), mlp.n_hidden(i - 1));
+            mlp.weight[i].setZero();
             mlp.bias[i].setZero(mlp.n_hidden(i));
             mlp.hidden[i].setZero(mlp.n_hidden(i));
-            mlp.hidden_derivative[i].setZero(mlp.n_hidden(i), mlp.n_hidden(i - 1));
-            // mlp.hidden_derivative[i].resize(mlp.n_hidden(i), mlp.n_hidden(i - 1));
-            // mlp.hidden_derivative[i].setZero();
+            mlp.hidden_derivative[i].resize(mlp.n_hidden(i), mlp.n_hidden(i - 1));
+            mlp.hidden_derivative[i].setZero();
         }
     }
-    // mlp.nerf_jac.setZero(3 * njsdf_.n_input, njsdf_.n_input);
     mlp.nerf_jac.resize(3 * njsdf_.n_input, njsdf_.n_input);
     mlp.nerf_jac.setZero();
 
@@ -197,6 +196,9 @@ void setNeuralNetwork()
     n_hidden << 256, 256, 256, 256;
     initializeNetwork(njsdf_, 10, 9, n_hidden, true);
     loadNetwork(njsdf_, NJSDF_DIR + "/learning/nn-learning/parameter/");
+    Eigen::initParallel();
+    Eigen::setNbThreads(8);
+    std::cout<<"Thread: "<<Eigen::nbThreads()<<std::endl;
 }
 
 void setNetworkInput(Eigen::VectorXd input)
@@ -211,120 +213,140 @@ void setNetworkInput(Eigen::VectorXd input)
         njsdf_.input_nerf.segment(1 * njsdf_.n_input, njsdf_.n_input) = sinInput;
         njsdf_.input_nerf.segment(2 * njsdf_.n_input, njsdf_.n_input) = cosInput;
     }
+    
     // std::cout<< "INPUT DATA:"<< std::endl <<njsdf_.input.transpose() << std::endl;
 }
 
-std::pair<Eigen::VectorXd, Eigen::MatrixXd> calculateMlpOutput()
+std::pair<Eigen::VectorXd, Eigen::MatrixXd> calculateMlpOutput(bool time_verbose)
 {
-    Eigen::SparseMatrix<double> temp_derivative;
-    clock_t start, finish;
-    for (int layer = 0; layer < njsdf_.n_layer; layer++)
-    {
-        if (layer == 0) // input layer
-        {
-            start = clock();
-            if (njsdf_.is_nerf) njsdf_.hidden[0] = njsdf_.weight[0] * njsdf_.input_nerf + njsdf_.bias[0];
-            else                njsdf_.hidden[0] = njsdf_.weight[0] * njsdf_.input + njsdf_.bias[0];
-            finish = clock();
-            std::cout<<"Input layer - Linear :"<< double(finish - start)  <<std::endl;
+    // std::vector<clock_t> start, finish;
+    // start.resize(3*njsdf_.n_layer);
+    // finish.resize(3*njsdf_.n_layer);
+
+    // start[3*njsdf_.n_layer - 1] = clock(); // Total 
+    // Eigen::SparseMatrix<double> temp_derivative;
+    // for (int layer = 0; layer < njsdf_.n_layer; layer++)
+    // {
+    //     if (layer == 0) // input layer
+    //     {
+    //         start[0] = clock(); // Linear 
+    //         if (njsdf_.is_nerf) njsdf_.hidden[0] = njsdf_.weight[0] * njsdf_.input_nerf + njsdf_.bias[0];
+    //         else                njsdf_.hidden[0] = njsdf_.weight[0] * njsdf_.input + njsdf_.bias[0];
+    //         finish[0] = clock();
             
-            start = clock();
-            njsdf_.hidden[0] = njsdf_.hidden[0].unaryExpr(&ReLU); //activation function
-            for (int h = 0; h < njsdf_.n_hidden(0); h++)
-            {                                                     
-                if (njsdf_.hidden[0](h) > 0)
-                {
-                    njsdf_.hidden_derivative[0].row(h) =  njsdf_.weight[0].row(h); //derivative wrt input
-                    // for (int i = 0; i <  njsdf_.weight[0].cols(); i++)
-                    // {
-                    //     njsdf_.hidden_derivative[0].coeffRef(h, i) = njsdf_.weight[0](h, i);
-                    // }
-                }
-            }
-            finish = clock();
-            std::cout<<"Input layer - ReLU :"<< double(finish - start)  <<std::endl;
+    //         start[1] = clock(); // ReLU
+    //         njsdf_.hidden[0] = njsdf_.hidden[0].unaryExpr(&ReLU); //activation function
+    //         njsdf_.hidden_derivative[layer].setZero();
+    //         njsdf_.hidden_derivative[0] = njsdf_.hidden_derivative[0].transpose();
+    //         for (int h = 0; h < njsdf_.n_hidden(0); h++)
+    //         {                                                     
+    //             if (njsdf_.hidden[0](h) > 0)
+    //             {
+    //                 njsdf_.hidden_derivative[0].col(h) =  njsdf_.weight[0].transpose().col(h); //derivative wrt input
+    //             }
+    //         }
+    //         njsdf_.hidden_derivative[0] = njsdf_.hidden_derivative[0].transpose();
+    //         finish[1] = clock();
 
-            if (njsdf_.is_nerf)
-            {
-                start = clock();
-                // njsdf_.nerf_jac.block(0 * njsdf_.n_input, 0, njsdf_.n_input, njsdf_.n_input) = Eigen::MatrixXd::Identity(njsdf_.n_input, njsdf_.n_input);
-                // njsdf_.nerf_jac.block(1 * njsdf_.n_input, 0, njsdf_.n_input, njsdf_.n_input).diagonal() <<   njsdf_.input.array().cos();
-                // njsdf_.nerf_jac.block(2 * njsdf_.n_input, 0, njsdf_.n_input, njsdf_.n_input).diagonal() << - njsdf_.input.array().sin();
-                for (int i = 0; i < njsdf_.n_input; i++)
-                {
-                    njsdf_.nerf_jac.coeffRef(0*njsdf_.n_input + i, i) = 1;
-                    njsdf_.nerf_jac.coeffRef(1*njsdf_.n_input + i, i) = cos(njsdf_.input(i));
-                    njsdf_.nerf_jac.coeffRef(2*njsdf_.n_input + i, i) = -sin(njsdf_.input(i));
-                }
-                finish = clock();
-                std::cout<<"Input layer - NerfJac :"<< double(finish - start)  <<std::endl;
-                start = clock();
-                // temp_derivative = (njsdf_.hidden_derivative[0] * njsdf_.nerf_jac.sparseView()).sparseView();
-                // temp_derivative = (njsdf_.hidden_derivative[0] * njsdf_.nerf_jac.sparseView());
+    //         if (njsdf_.is_nerf)
+    //         {
+    //             for (int i = 0; i < njsdf_.n_input; i++)
+    //             {
+    //                 njsdf_.nerf_jac.coeffRef(0*njsdf_.n_input + i, i) = 1;
+    //                 njsdf_.nerf_jac.coeffRef(1*njsdf_.n_input + i, i) = cos(njsdf_.input(i));
+    //                 njsdf_.nerf_jac.coeffRef(2*njsdf_.n_input + i, i) = -sin(njsdf_.input(i));
+    //             }
+    //             start[2] = clock(); // Multip
+    //             temp_derivative = (njsdf_.hidden_derivative[0] * njsdf_.nerf_jac);
+    //             finish[2] = clock();
+    //         }
+    //         else
+    //         {
+    //             temp_derivative = njsdf_.hidden_derivative[0];
+    //         }
+    //     }
+    //     else if (layer == njsdf_.n_layer - 1) // output layer
+    //     {
+    //         start[layer*3] = clock(); // Linear
+    //         njsdf_.output = njsdf_.weight[layer] * njsdf_.hidden[layer - 1] + njsdf_.bias[layer];
+    //         finish[layer*3] = clock(); 
 
-                temp_derivative = (njsdf_.hidden_derivative[0] * njsdf_.nerf_jac).sparseView();
-                finish = clock();
-                std::cout<<"Input layer - Multip :"<< double(finish - start)  <<std::endl;
-            }
-            else
-            {
-                temp_derivative = njsdf_.hidden_derivative[0].sparseView();
-                // temp_derivative = njsdf_.hidden_derivative[0];
-            }
-        }
-        else if (layer == njsdf_.n_layer - 1) // output layer
-        {
-            start = clock();
-            njsdf_.output = njsdf_.weight[layer] * njsdf_.hidden[layer - 1] + njsdf_.bias[layer];
-            finish = clock();
-            std::cout<<"Output layer - Linear :"<< double(finish - start)  <<std::endl;
-            start = clock();
-            njsdf_.output_derivative = njsdf_.weight[layer] * temp_derivative;
-            // njsdf_.output_derivative = njsdf_.weight[layer] * temp_derivative[layer - 1];
-            finish = clock();
-            std::cout<<"Output layer - Multip :"<< double(finish - start)  <<std::endl;
-        }
-        else // hidden layers
-        {
-            start = clock();
-            njsdf_.hidden[layer] = njsdf_.weight[layer] * njsdf_.hidden[layer - 1] + njsdf_.bias[layer];
-            finish = clock();
-            std::cout<<"Hidden "<<layer<< " layer - Linear :"<< double(finish - start)  <<std::endl;
-            njsdf_.hidden[layer] = njsdf_.hidden[layer].unaryExpr(&ReLU); //activation function
-            start = clock();
-            // Eigen::MatrixXd tmp(njsdf_.hidden_derivative[layer].cols(), njsdf_.hidden_derivative[layer].rows());
-            for (int h = 0; h < njsdf_.n_hidden(layer); h++)
-            {                                                     
-                if (njsdf_.hidden[layer](h) > 0)
-                {
-                    njsdf_.hidden_derivative[layer].row(h) =  njsdf_.weight[layer].row(h); //derivative wrt input
+    //         start[layer*3+1] = clock(); // Multip
+    //         njsdf_.output_derivative = njsdf_.weight[layer] * temp_derivative;
+    //         finish[layer*3+1] = clock();
+    //     }
+    //     else // hidden layers
+    //     {
+    //         start[layer*3] = clock(); // Linear
+    //         njsdf_.hidden[layer] = njsdf_.weight[layer] * njsdf_.hidden[layer - 1] + njsdf_.bias[layer];
+    //         finish[layer*3] = clock();
 
-                    // Eigen::SparseVector<double> tmp = njsdf_.weight[layer].row(h).sparseView();
-                    // njsdf_.hidden_derivative[layer].row(h) =  tmp; //derivative wrt input
+    //         start[layer*3+1] = clock(); // ReLU
+    //         njsdf_.hidden[layer] = njsdf_.hidden[layer].unaryExpr(&ReLU); //activation function
+    //         njsdf_.hidden_derivative[layer].setZero();
+    //         // njsdf_.hidden_derivative[layer] = njsdf_.hidden_derivative[layer].transpose();
+    //         for (int h = 0; h < njsdf_.n_hidden(layer); h++)
+    //         {                                                     
+    //             if (njsdf_.hidden[layer](h) > 0)
+    //             {
+    //                 // njsdf_.hidden_derivative[layer].col(h) =  njsdf_.weight[layer].transpose().col(h); //derivative wrt input
+    //                 #pragma omp parallel for
+    //                 for (int w = 0; w < 255; w++)
+    //                 {
+    //                     njsdf_.hidden_derivative[layer].coeffRef(w, h) = njsdf_.weight[layer].coeff(w,h);
+    //                 }
+    //             }
+    //         }
+    //         // njsdf_.hidden_derivative[layer] = njsdf_.hidden_derivative[layer].transpose();
+    //         finish[layer*3+1] = clock();
 
-                    // for (int i = 0; i <  njsdf_.weight[layer].cols(); i++)
-                    // {
-                    //     njsdf_.hidden_derivative[layer].insert(h, i) = njsdf_.weight[layer](h, i);
-                    // }
-                    // tmp.row(h) =  njsdf_.weight[layer].row(h); //derivative wrt input
+    //         start[3*layer+2] = clock(); //Multip
+    //         temp_derivative =  njsdf_.hidden_derivative[layer] * temp_derivative;
+    //         finish[3*layer+2] = clock();
+    //     }
+    // }
+    // finish[3*njsdf_.n_layer - 1] = clock();
+    // if(time_verbose)
+    // {
+    //     std::cout<<"------------------Time[1e-6]------------------"<<std::endl;
+    //     for (int layer = 0; layer < njsdf_.n_layer; layer++)
+    //     {
+    //         if(layer == njsdf_.n_layer - 1)
+    //         {
+    //             std::cout<<"Layer "<<layer<<" -Linear: "<<double(finish[3*layer+0]-start[3*layer+0])<<std::endl;
+    //             std::cout<<"Layer "<<layer<<" -Multip: "<<double(finish[3*layer+1]-start[3*layer+1])<<std::endl;
+    //             std::cout<<"Total          : "          <<double(finish[3*layer+2]-start[3*layer+2])<<std::endl;
+    //         }
+    //         else
+    //         {
+    //             std::cout<<"Layer "<<layer<<" -Linear: "<<double(finish[3*layer+0]-start[3*layer+0])<<std::endl;
+    //             std::cout<<"Layer "<<layer<<" -ReLU  : "<<double(finish[3*layer+1]-start[3*layer+1])<<std::endl;
+    //             std::cout<<"Layer "<<layer<<" -Multip: "<<double(finish[3*layer+2]-start[3*layer+2])<<std::endl;
+    //         }
+    //     }
+    //     std::cout<<"------------------------------------------------"<<std::endl;
+    // }
+    // #pragma omp parallel
+    // #pragma omp for
+    clock_t tic, toc;
 
-                }
-            }
-            // njsdf_.hidden_derivative[layer] = tmp.sparseView();
-            finish = clock();
-            std::cout<<"Hidden "<<layer<< " layer - ReLU :"<< double(finish - start)  <<std::endl;
-            start = clock();
-            Eigen::SparseMatrix<double> tmp = njsdf_.hidden_derivative[layer].sparseView();
-            temp_derivative = (tmp * temp_derivative);
-            // temp_derivative =  (njsdf_.hidden_derivative[layer] * temp_derivative).sparseView();
-            finish = clock();
-            std::cout<<"Hidden "<<layer<< " layer - Multip :"<< double(finish - start)  <<std::endl;
-        }
+    Eigen::VectorXd tmp;
+
+    tic = clock();
+
+    // #pragma omp parallel for
+    for(int i = 0 ;i < 100; i++)
+    {
+        tmp(i) = double(i);
     }
+
+    toc = clock();
+
+    std::cout<<double(toc-tic)<<std::endl;
+
     return std::make_pair(njsdf_.output, njsdf_.output_derivative); 
-    // std::cout<< "OUTPUT DATA:"<< std::endl <<njsdf_.output.transpose() << std::endl;
-    // std::cout<< "OUTPUT DATA:"<< std::endl <<njsdf_.output_derivative << std::endl;
 }
+
 
 
 namespace py = pybind11;
